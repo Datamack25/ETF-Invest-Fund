@@ -1,14 +1,11 @@
-"""
-storage.py — Persistance en CSV
-================================
+"""storage.py — Persistance en CSV
 4 fichiers CSV dans ./data/ (créés automatiquement) :
 
-  assets.csv              -> univers des actifs (ticker, nom, catégorie, secteur, symboles)
-  portfolios.csv          -> portefeuilles créés (nom, capital, allocations cibles)
-  transactions.csv        -> chaque achat/vente enregistré
-  performance_history.csv -> snapshots de valorisation (pour suivre la perf dans le temps)
+assets.csv              -> univers des actifs (ticker, nom, catégorie, secteur, symboles)
+portfolios.csv          -> portefeuilles créés (nom, capital, allocations cibles)
+transactions.csv        -> chaque achat/vente enregistré
+performance_history.csv -> snapshots de valorisation (suivi de la perf dans le temps)
 """
-
 import os
 from datetime import datetime
 import pandas as pd
@@ -22,64 +19,65 @@ F_TRANSACTIONS = os.path.join(DATA_DIR, "transactions.csv")
 F_PERF = os.path.join(DATA_DIR, "performance_history.csv")
 
 # ---------------------------------------------------------------------------
-# UNIVERS D'ACTIFS PAR DÉFAUT — repris de ta feuille Gestion_Portfeuille
+# UNIVERS D'ACTIFS PAR DÉFAUT — repris de la feuille Gestion_Portfeuille
 # catégorie: ETF / Action / Bond
 # ---------------------------------------------------------------------------
 DEFAULT_ASSETS = [
     # ETFs thématiques
-    ("NERD",  "Roundhill Video Games",        "ETF",  "Gaming",             "NYSEARCA:NERD",  "NERD"),
-    ("ESPO",  "VanEck Video Gaming eSports",  "ETF",  "Gaming",             "NASDAQ:ESPO",    "ESPO"),
-    ("XSD",   "SPDR S&P Semiconductor",       "ETF",  "Semiconductors",     "NYSEARCA:XSD",   "XSD"),
-    ("SOXX",  "iShares Semiconductor",        "ETF",  "Semiconductors",     "NASDAQ:SOXX",    "SOXX"),
-    ("SMH",   "VanEck Semiconductor",         "ETF",  "Semiconductors",     "NASDAQ:SMH",     "SMH"),
-    ("SKYY",  "First Trust Cloud Computing",  "ETF",  "Cloud_Data storage", "NASDAQ:SKYY",    "SKYY"),
-    ("CLOU",  "Global X Cloud Computing",     "ETF",  "Cloud_Data storage", "NASDAQ:CLOU",    "CLOU"),
-    ("WCLD",  "WisdomTree Cloud Computing",   "ETF",  "Cloud_Data storage", "NASDAQ:WCLD",    "WCLD"),
-    ("HACK",  "Amplify Cybersecurity",        "ETF",  "Cybersecurity",      "NYSEARCA:HACK",  "HACK"),
-    ("CIBR",  "First Trust NASDAQ Cyber",     "ETF",  "Cybersecurity",      "NASDAQ:CIBR",    "CIBR"),
-    ("BUG",   "Global X Cybersecurity",       "ETF",  "Cybersecurity",      "NASDAQ:BUG",     "BUG"),
-    ("IPAY",  "Amplify Digital Payments",     "ETF",  "Fintechs",           "NYSEARCA:IPAY",  "IPAY"),
-    ("ARKF",  "ARK Fintech Innovation",       "ETF",  "Fintechs",           "NYSEARCA:ARKF",  "ARKF"),
-    ("FINX",  "Global X FinTech",             "ETF",  "Fintechs",           "NASDAQ:FINX",    "FINX"),
-    ("ROBT",  "First Trust AI & Robotics",    "ETF",  "IA & Robotics",      "NASDAQ:ROBT",    "ROBT"),
-    ("BOTZ",  "Global X Robotics & AI",       "ETF",  "IA & Robotics",      "NASDAQ:BOTZ",    "BOTZ"),
-    ("QQQ",   "Invesco QQQ (Nasdaq 100)",     "ETF",  "Techs",              "NASDAQ:QQQ",     "QQQ"),
-    ("SPY",   "SPDR S&P 500",                 "ETF",  "Large Cap",          "NYSEARCA:SPY",   "SPY"),
-    ("EZU",   "iShares MSCI Eurozone",        "ETF",  "Europe",             "BATS:EZU",       "EZU"),
-    ("IEMG",  "iShares Core MSCI EM",         "ETF",  "Émergents",          "NYSEARCA:IEMG",  "IEMG"),
-    ("ITA",   "iShares US Aerospace&Defense", "ETF",  "Defense & aerospace","BATS:ITA",       "ITA"),
-    ("PPA",   "Invesco Aerospace & Defense",  "ETF",  "Defense & aerospace","NYSEARCA:PPA",   "PPA"),
-    ("XAR",   "SPDR S&P Aerospace & Defense", "ETF",  "Defense & aerospace","NYSEARCA:XAR",   "XAR"),
+    ("NERD", "Roundhill Video Games", "ETF", "Gaming", "NYSEARCA:NERD", "NERD"),
+    ("ESPO", "VanEck Video Gaming eSports", "ETF", "Gaming", "NASDAQ:ESPO", "ESPO"),
+    ("XSD", "SPDR S&P Semiconductor", "ETF", "Semiconductors", "NYSEARCA:XSD", "XSD"),
+    ("SOXX", "iShares Semiconductor", "ETF", "Semiconductors", "NASDAQ:SOXX", "SOXX"),
+    ("SMH", "VanEck Semiconductor", "ETF", "Semiconductors", "NASDAQ:SMH", "SMH"),
+    ("SKYY", "First Trust Cloud Computing", "ETF", "Cloud_Data storage", "NASDAQ:SKYY", "SKYY"),
+    ("CLOU", "Global X Cloud Computing", "ETF", "Cloud_Data storage", "NASDAQ:CLOU", "CLOU"),
+    ("WCLD", "WisdomTree Cloud Computing", "ETF", "Cloud_Data storage", "NASDAQ:WCLD", "WCLD"),
+    ("HACK", "Amplify Cybersecurity", "ETF", "Cybersecurity", "NYSEARCA:HACK", "HACK"),
+    ("CIBR", "First Trust NASDAQ Cyber", "ETF", "Cybersecurity", "NASDAQ:CIBR", "CIBR"),
+    ("BUG", "Global X Cybersecurity", "ETF", "Cybersecurity", "NASDAQ:BUG", "BUG"),
+    ("IPAY", "Amplify Digital Payments", "ETF", "Fintechs", "NYSEARCA:IPAY", "IPAY"),
+    ("ARKF", "ARK Fintech Innovation", "ETF", "Fintechs", "NYSEARCA:ARKF", "ARKF"),
+    ("FINX", "Global X FinTech", "ETF", "Fintechs", "NASDAQ:FINX", "FINX"),
+    ("ROBT", "First Trust AI & Robotics", "ETF", "IA & Robotics", "NASDAQ:ROBT", "ROBT"),
+    ("BOTZ", "Global X Robotics & AI", "ETF", "IA & Robotics", "NASDAQ:BOTZ", "BOTZ"),
+    ("QQQ", "Invesco QQQ (Nasdaq 100)", "ETF", "Techs", "NASDAQ:QQQ", "QQQ"),
+    ("SPY", "SPDR S&P 500", "ETF", "Large Cap", "NYSEARCA:SPY", "SPY"),
+    ("EZU", "iShares MSCI Eurozone", "ETF", "Europe", "BATS:EZU", "EZU"),
+    ("IEMG", "iShares Core MSCI EM", "ETF", "Émergents", "NYSEARCA:IEMG", "IEMG"),
+    ("ITA", "iShares US Aerospace&Defense", "ETF", "Defense & aerospace", "BATS:ITA", "ITA"),
+    ("PPA", "Invesco Aerospace & Defense", "ETF", "Defense & aerospace", "NYSEARCA:PPA", "PPA"),
+    ("XAR", "SPDR S&P Aerospace & Defense", "ETF", "Defense & aerospace", "NYSEARCA:XAR", "XAR"),
     # Actions
-    ("XYZ",   "Block (Square)",               "Action", "Fintechs",         "NYSE:XYZ",       "XYZ"),
-    ("PYPL",  "PayPal",                       "Action", "Fintechs",         "NASDAQ:PYPL",    "PYPL"),
-    ("CRWD",  "CrowdStrike",                  "Action", "Cybersecurity",    "NASDAQ:CRWD",    "CRWD"),
-    ("FTNT",  "Fortinet",                     "Action", "Cybersecurity",    "NASDAQ:FTNT",    "FTNT"),
-    ("PANW",  "Palo Alto Networks",           "Action", "Cybersecurity",    "NASDAQ:PANW",    "PANW"),
-    ("CHKP",  "Check Point Software",         "Action", "Cybersecurity",    "NASDAQ:CHKP",    "CHKP"),
-    ("DLR",   "Digital Realty",               "Action", "Cloud_Data storage","NYSE:DLR",      "DLR"),
-    ("NTAP",  "NetApp",                       "Action", "Cloud_Data storage","NASDAQ:NTAP",   "NTAP"),
-    ("GOOGL", "Alphabet",                     "Action", "Techs",            "NASDAQ:GOOGL",   "GOOGL"),
-    ("AMZN",  "Amazon",                       "Action", "Techs",            "NASDAQ:AMZN",    "AMZN"),
-    ("AAPL",  "Apple",                        "Action", "Techs",            "NASDAQ:AAPL",    "AAPL"),
-    ("CSCO",  "Cisco",                        "Action", "Techs",            "NASDAQ:CSCO",    "CSCO"),
-    ("PLTR",  "Palantir",                     "Action", "Techs",            "NASDAQ:PLTR",    "PLTR"),
-    ("TSLA",  "Tesla",                        "Action", "Techs",            "NASDAQ:TSLA",    "TSLA"),
-    ("NVDA",  "NVIDIA",                       "Action", "Semiconductors",   "NASDAQ:NVDA",    "NVDA"),
-    ("AVGO",  "Broadcom",                     "Action", "Semiconductors",   "NASDAQ:AVGO",    "AVGO"),
-    ("TTWO",  "Take-Two Interactive",         "Action", "Gaming",           "NASDAQ:TTWO",    "TTWO"),
-    ("SNOW",  "Snowflake",                    "Action", "IA & Robotics",    "NYSE:SNOW",      "SNOW"),
+    ("XYZ", "Block (Square)", "Action", "Fintechs", "NYSE:XYZ", "XYZ"),
+    ("PYPL", "PayPal", "Action", "Fintechs", "NASDAQ:PYPL", "PYPL"),
+    ("CRWD", "CrowdStrike", "Action", "Cybersecurity", "NASDAQ:CRWD", "CRWD"),
+    ("FTNT", "Fortinet", "Action", "Cybersecurity", "NASDAQ:FTNT", "FTNT"),
+    ("PANW", "Palo Alto Networks", "Action", "Cybersecurity", "NASDAQ:PANW", "PANW"),
+    ("CHKP", "Check Point Software", "Action", "Cybersecurity", "NASDAQ:CHKP", "CHKP"),
+    ("DLR", "Digital Realty", "Action", "Cloud_Data storage", "NYSE:DLR", "DLR"),
+    ("NTAP", "NetApp", "Action", "Cloud_Data storage", "NASDAQ:NTAP", "NTAP"),
+    ("GOOGL", "Alphabet", "Action", "Techs", "NASDAQ:GOOGL", "GOOGL"),
+    ("AMZN", "Amazon", "Action", "Techs", "NASDAQ:AMZN", "AMZN"),
+    ("AAPL", "Apple", "Action", "Techs", "NASDAQ:AAPL", "AAPL"),
+    ("CSCO", "Cisco", "Action", "Techs", "NASDAQ:CSCO", "CSCO"),
+    ("PLTR", "Palantir", "Action", "Techs", "NASDAQ:PLTR", "PLTR"),
+    ("TSLA", "Tesla", "Action", "Techs", "NASDAQ:TSLA", "TSLA"),
+    ("NVDA", "NVIDIA", "Action", "Semiconductors", "NASDAQ:NVDA", "NVDA"),
+    ("AVGO", "Broadcom", "Action", "Semiconductors", "NASDAQ:AVGO", "AVGO"),
+    ("TTWO", "Take-Two Interactive", "Action", "Gaming", "NASDAQ:TTWO", "TTWO"),
+    ("SNOW", "Snowflake", "Action", "IA & Robotics", "NYSE:SNOW", "SNOW"),
     # Bonds (ETF obligataires)
-    ("AGG",   "iShares Core US Aggregate",    "Bond", "Obligations",        "NYSEARCA:AGG",   "AGG"),
-    ("BND",   "Vanguard Total Bond Market",   "Bond", "Obligations",        "NASDAQ:BND",     "BND"),
-    ("IEF",   "iShares 7-10Y Treasury",       "Bond", "Obligations",        "NASDAQ:IEF",     "IEF"),
-    ("LQD",   "iShares IG Corporate Bond",    "Bond", "Obligations",        "NYSEARCA:LQD",   "LQD"),
-    ("TLT",   "iShares 20+Y Treasury",        "Bond", "Obligations",        "NASDAQ:TLT",     "TLT"),
+    ("AGG", "iShares Core US Aggregate", "Bond", "Obligations", "NYSEARCA:AGG", "AGG"),
+    ("BND", "Vanguard Total Bond Market", "Bond", "Obligations", "NASDAQ:BND", "BND"),
+    ("IEF", "iShares 7-10Y Treasury", "Bond", "Obligations", "NASDAQ:IEF", "IEF"),
+    ("LQD", "iShares IG Corporate Bond", "Bond", "Obligations", "NYSEARCA:LQD", "LQD"),
+    ("TLT", "iShares 20+Y Treasury", "Bond", "Obligations", "NASDAQ:TLT", "TLT"),
 ]
 
 ASSET_COLS = ["ticker", "nom", "categorie", "secteur", "google_symbol", "yahoo_symbol"]
 PF_COLS = ["portfolio", "capital", "devise", "alloc_actions", "alloc_etf", "alloc_bonds", "date_creation"]
-TX_COLS = ["date", "portfolio", "ticker", "categorie", "secteur", "sens", "quantite", "prix", "montant", "source_prix"]
+TX_COLS = ["date", "portfolio", "ticker", "categorie", "secteur", "sens",
+           "quantite", "prix", "montant", "source_prix"]
 PERF_COLS = ["date", "portfolio", "valeur_marche", "investi", "gain_perte", "perf_pct"]
 
 
@@ -113,7 +111,8 @@ def add_asset(ticker, nom, categorie, secteur, google_symbol, yahoo_symbol):
     df = load_assets()
     if ticker.upper() in df["ticker"].str.upper().values:
         return False, "Ce ticker existe déjà dans l'univers."
-    row = pd.DataFrame([[ticker.upper(), nom, categorie, secteur, google_symbol, yahoo_symbol]], columns=ASSET_COLS)
+    row = pd.DataFrame([[ticker.upper(), nom, categorie, secteur, google_symbol, yahoo_symbol]],
+                       columns=ASSET_COLS)
     _save(pd.concat([df, row], ignore_index=True), F_ASSETS)
     return True, f"{ticker.upper()} ajouté à l'univers d'actifs."
 
@@ -158,7 +157,8 @@ def add_transaction(portfolio, ticker, categorie, secteur, sens, quantite, prix,
     df = load_transactions()
     montant = round(quantite * prix, 2)
     row = pd.DataFrame([[datetime.now().strftime("%Y-%m-%d %H:%M"), portfolio, ticker,
-                         categorie, secteur, sens, quantite, prix, montant, source_prix]], columns=TX_COLS)
+                         categorie, secteur, sens, quantite, prix, montant, source_prix]],
+                       columns=TX_COLS)
     _save(pd.concat([df, row], ignore_index=True), F_TRANSACTIONS)
 
 
