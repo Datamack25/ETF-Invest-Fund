@@ -86,11 +86,94 @@ if st.sidebar.button("🔄 Rafraîchir les prix"):
 pf_df = db.load_portfolios()
 assets = db.load_assets()
 
+# ═══════════════════════ APERÇU MARCHÉS (indices) ═══════════════════════
+MARKET_INDICES = {
+    "S&P 500": "^GSPC", "Nasdaq 100": "^NDX", "Dow Jones": "^DJI",
+    "CAC 40": "^FCHI", "DAX": "^GDAXI", "MSCI World": "URTH",
+    "Or": "GC=F", "Pétrole WTI": "CL=F", "VIX": "^VIX",
+    "EUR/USD": "EURUSD=X", "Bitcoin": "BTC-USD", "US 10Y": "^TNX",
+}
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_market_history(period: str) -> pd.DataFrame:
+    """Historique de clôture des indices pour le graphique d'évolution."""
+    try:
+        raw = yf.download(list(MARKET_INDICES.values()), period=period, interval="1d",
+                          progress=False, auto_adjust=True)
+        closes = raw["Close"] if "Close" in raw else raw
+        if isinstance(closes, pd.Series):
+            closes = closes.to_frame()
+        inv = {v: k for k, v in MARKET_INDICES.items()}
+        closes = closes.rename(columns=inv)
+        return closes.ffill().dropna(how="all")
+    except Exception:
+        return pd.DataFrame()
+
+
+def render_market_overview():
+    """Tuiles indices + graphique d'évolution comparée. Toujours affiché."""
+    st.subheader("🌍 Marchés du jour")
+    hist = load_market_history("6mo")
+    if hist.empty or len(hist) < 2:
+        st.warning("Données de marché momentanément indisponibles (yfinance). "
+                   "Clique « Rafraîchir les prix » dans quelques minutes.")
+        return
+
+    # Tuiles : dernier prix + variation quotidienne
+    names = [n for n in MARKET_INDICES if n in hist.columns]
+    for row_start in range(0, len(names), 6):
+        cols = st.columns(6)
+        for col, name in zip(cols, names[row_start:row_start + 6]):
+            s = hist[name].dropna()
+            if len(s) < 2:
+                continue
+            last, prev = float(s.iloc[-1]), float(s.iloc[-2])
+            chg = (last / prev - 1) * 100
+            fmt = f"{last:,.2f}" if last < 10000 else f"{last:,.0f}"
+            col.metric(name, fmt, f"{chg:+.2f}%")
+
+    # Graphique d'évolution comparée (base 100)
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        per_key = st.selectbox("Période du graphique",
+                               ["5 jours", "1 mois", "3 mois", "6 mois"], index=1)
+        sel = st.multiselect("Indices à afficher", names,
+                             default=[n for n in ["S&P 500", "Nasdaq 100", "CAC 40",
+                                                  "MSCI World", "Or"] if n in names])
+    n_days = {"5 jours": 5, "1 mois": 22, "3 mois": 66, "6 mois": 126}[per_key]
+    seg = hist.tail(n_days)
+    with c2:
+        if sel and len(seg) > 1:
+            fig = go.Figure()
+            for name in sel:
+                s = seg[name].dropna()
+                if len(s) > 1:
+                    base = s / s.iloc[0] * 100
+                    fig.add_trace(go.Scatter(x=base.index, y=base.values,
+                                             name=name, mode="lines"))
+            fig.add_hline(y=100, line_dash="dot", line_color="#777")
+            fig.update_layout(title=f"Évolution comparée (base 100) — {per_key}",
+                              template="plotly_dark", height=360,
+                              margin=dict(l=10, r=10, t=40, b=10),
+                              legend=dict(orientation="h", y=-0.15))
+            st.plotly_chart(fig, use_container_width=True)
+    st.caption("Prix yfinance (délai ~15 min). Base 100 = tous les indices ramenés à 100 "
+               "au début de la période pour comparer leurs performances relatives.")
+
+
 # ═══════════════════════ PAGE : DASHBOARD ═══════════════════════
 if page == "📊 Tableau de bord":
     st.title("📊 Tableau de bord")
+
+    # Les marchés s'affichent TOUJOURS, portefeuille ou pas
+    render_market_overview()
+    st.divider()
+
+    st.subheader("💼 Mon portefeuille")
     if pf_df.empty:
-        st.info("Aucun portefeuille. Crée-en un dans l'onglet 💼 Portefeuilles.")
+        st.info("Aucun portefeuille pour l'instant. Crée-en un dans l'onglet 💼 Portefeuilles "
+                "pour voir apparaître ici tes positions, ton P&L et ton allocation vs cible.")
         st.stop()
 
     pf_name = st.selectbox("Portefeuille", pf_df["portfolio"].tolist())
