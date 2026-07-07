@@ -1,441 +1,562 @@
+# -*- coding: utf-8 -*-
 """
-ETFCore — Plateforme d'investissement ETF
-==========================================
-Prix : Google Finance en priorité, Yahoo Finance en fallback.
-Persistance : fichiers CSV (data/assets.csv, portfolios.csv,
-transactions.csv, performance_history.csv).
+NQ Command Center — Plateforme d'analyse ICT/MMM multi-timeframe
+Nasdaq · S&P 500 · Or | Risque prop firm MMM | VIX | Macro | ML | Journal
 
-Lancement :  streamlit run app.py
+⚠️ Outil d'aide à la décision. Ceci n'est pas un conseil financier.
 """
-
+import datetime as dt
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-import storage as db
-from data_fetcher import get_price, get_index_dashboard, get_history, WORLD_INDICES
+from modules import data_loader as dl
+from modules import ict_analysis as ict
+from modules import mmm_analysis as mmm
+from modules import risk_calculator as rc
+from modules import vix_sentiment as vs
+from modules import news_events as ne
+from modules import ml_engine as ml
+from modules import pattern_memory as pm
+from modules import journal as jr
+from modules import charts as ch
+from modules import correlations as cor
 
-# ---------------------------------------------------------------------------
-# CONFIG & THEME
-# ---------------------------------------------------------------------------
-st.set_page_config(page_title="ETFCore — Plateforme ETF", page_icon="📈", layout="wide")
+st.set_page_config(page_title="NQ Command Center", page_icon="📡", layout="wide")
 
 st.markdown("""
 <style>
-.stApp { background: linear-gradient(180deg,#0b1020 0%,#0e1428 100%); color:#e8ecf5; }
-h1,h2,h3 { color:#e8ecf5 !important; }
-[data-testid="stMetric"] {
-  background:#141b33; border:1px solid #263259; border-radius:14px; padding:14px;
-}
-[data-testid="stMetricLabel"] { color:#9fb0d8 !important; }
-[data-testid="stSidebar"] { background:#0a0f1f; border-right:1px solid #1d2848; }
-div.stButton>button {
-  background:linear-gradient(90deg,#2557d6,#6e3df5); color:#fff; border:0;
-  border-radius:10px; font-weight:600;
-}
-.badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px;
-  background:#1d2848; border:1px solid #35437a; color:#9fb0d8; margin-right:6px;}
+    .main .block-container {padding-top: 1.2rem;}
+    div[data-testid="stMetric"] {background: #161b22; border: 1px solid #2a313c;
+        border-radius: 8px; padding: 10px 14px;}
+    .stTabs [data-baseweb="tab"] {font-size: 0.95rem;}
 </style>
 """, unsafe_allow_html=True)
 
-PALETTE = ["#4f8cff", "#8b5cf6", "#22d3ee", "#f59e0b", "#10b981",
-           "#ef4444", "#e879f9", "#84cc16", "#fb7185", "#38bdf8"]
-CAT_COLORS = {"ETF": "#4f8cff", "Action": "#8b5cf6", "Bond": "#10b981"}
+# ───────────────────────────── Sidebar ─────────────────────────────
+st.sidebar.title("📡 NQ Command Center")
+st.sidebar.caption("ICT · MMM · Macro · ML — *pas un conseil financier*")
 
-
-def style_fig(fig, h=380):
-    fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#c9d4ee"), height=h,
-        margin=dict(l=10, r=10, t=40, b=10),
-        legend=dict(bgcolor="rgba(0,0,0,0)"),
-    )
-    fig.update_xaxes(gridcolor="#1d2848")
-    fig.update_yaxes(gridcolor="#1d2848")
-    return fig
-
-
-def valorise(holds: pd.DataFrame, assets: pd.DataFrame) -> pd.DataFrame:
-    """Ajoute prix actuel (Google→Yahoo), valeur, gain/perte aux positions."""
-    if holds.empty:
-        return holds
-    rows = []
-    for _, r in holds.iterrows():
-        a = assets[assets["ticker"] == r["ticker"]]
-        g_sym = a["google_symbol"].iloc[0] if not a.empty else r["ticker"]
-        y_sym = a["yahoo_symbol"].iloc[0] if not a.empty else r["ticker"]
-        q = get_price(g_sym, y_sym)
-        px_now = q["price"]
-        val = px_now * r["quantite"] if px_now else None
-        rows.append({**r, "prix_actuel": px_now, "source": q["source"],
-                     "valeur": val,
-                     "gain_perte": (val - r["investi"]) if val is not None else None,
-                     "rdmt_pct": ((val / r["investi"] - 1) * 100) if (val is not None and r["investi"]) else None})
-    return pd.DataFrame(rows)
-
-
-# ---------------------------------------------------------------------------
-# SIDEBAR / NAVIGATION
-# ---------------------------------------------------------------------------
-st.sidebar.title("📈 ETFCore")
-st.sidebar.caption("Google Finance ▸ fallback Yahoo Finance")
 page = st.sidebar.radio("Navigation", [
-    "🏠 Accueil",
-    "🌍 Indices mondiaux",
-    "💼 Mes portefeuilles",
-    "🛒 Transactions",
-    "📊 Performance",
-    "🗂️ Actifs & données (CSV)",
+    "🎯 Dashboard & Signal",
+    "📊 Analyse ICT multi-TF",
+    "🧮 Risque prop firm (MMM)",
+    "📓 Journal de trading",
+    "😱 VIX & Psychologie",
+    "🔗 Corrélations live",
+    "🌍 Événements du jour",
+    "🤖 Machine Learning",
+    "🧠 Mémoire des patterns",
 ])
-st.sidebar.divider()
-st.sidebar.markdown(
-    "<span class='badge'>Actions 15%</span><span class='badge'>ETFs 65%</span>"
-    "<span class='badge'>Bonds 20%</span>", unsafe_allow_html=True)
-st.sidebar.caption("Stratégie cible par défaut (modifiable par portefeuille).")
 
-assets = db.load_assets()
+instrument = st.sidebar.selectbox("Instrument", list(dl.SYMBOLS.keys()))
+ticker = dl.SYMBOLS[instrument]
 
-# ===========================================================================
-# 🏠 ACCUEIL
-# ===========================================================================
-if page == "🏠 Accueil":
-    st.title("🏠 Plateforme d'investissement ETF")
-    st.caption("Prix Google Finance en priorité — bascule automatique sur Yahoo Finance si indisponible.")
+if st.sidebar.button("🔄 Rafraîchir les données"):
+    st.cache_data.clear()
+    st.rerun()
 
-    # --- Aperçu marché (mini-dashboard indices) ---
-    # try/except : si Google ET Yahoo échouent, la page s'affiche quand même
-    try:
-        with st.spinner("Chargement des indices…"):
-            idx = get_index_dashboard()
-    except Exception as e:
-        idx = pd.DataFrame(columns=["Indice", "Prix", "Var 1J %"])
-        st.warning(f"Indices momentanément indisponibles ({e}). Le reste de la plateforme fonctionne.")
-    key_idx = ["S&P500", "NASDAQ", "CAC 40", "DAX", "Nikkei 225", "VIX"]
-    cols = st.columns(len(key_idx))
-    for c, name in zip(cols, key_idx):
-        row = idx[idx["Indice"] == name] if not idx.empty else pd.DataFrame()
-        if row.empty or pd.isna(row["Prix"].iloc[0]):
-            c.metric(name, "N/A")
-        else:
-            chg = row["Var 1J %"].iloc[0]
-            c.metric(name, f"{row['Prix'].iloc[0]:,.2f}",
-                     f"{chg:+.2f}%" if pd.notna(chg) else None)
 
-    st.divider()
+@st.cache_data(ttl=300, show_spinner="Chargement des données…")
+def full_analysis(tk: str):
+    """Charge tous les TF, analyse ICT + MMM, calcule la confluence."""
+    tfs = dl.load_all_timeframes(tk)
+    analyses, mmm_res = {}, {}
+    for tf, df in tfs.items():
+        analyses[tf] = ict.analyze_timeframe(df, tf) if not df.empty else None
+        mmm_res[tf] = mmm.mmm_summary(df) if not df.empty else None
+    ltf_df = tfs.get("15m") if tfs.get("15m") is not None and not tfs["15m"].empty else tfs.get("1D")
+    atr_val = float(dl.atr(ltf_df).iloc[-1]) if ltf_df is not None and len(ltf_df) > 15 else 0
+    conf = ict.multi_tf_confluence(analyses, atr_val)
+    return tfs, analyses, mmm_res, conf
 
-    # --- Catégories principales d'investissement ---
-    st.subheader("Catégories principales d'investissement")
-    c1, c2 = st.columns([1, 1])
 
-    with c1:
-        cat_counts = assets.groupby("categorie").size().reset_index(name="Nb actifs")
-        fig = px.pie(cat_counts, names="categorie", values="Nb actifs", hole=0.55,
-                     color="categorie", color_discrete_map=CAT_COLORS,
-                     title="Univers d'actifs par catégorie")
-        st.plotly_chart(style_fig(fig), use_container_width=True)
+# ═════════════════════════ PAGE : DASHBOARD ═════════════════════════
+if page == "🎯 Dashboard & Signal":
+    st.title(f"🎯 Signal de trading — {instrument}")
+    tfs, analyses, mmm_res, conf = full_analysis(ticker)
 
-    with c2:
-        sec_counts = assets.groupby("secteur").size().reset_index(name="Nb actifs").sort_values("Nb actifs")
-        fig = px.bar(sec_counts, x="Nb actifs", y="secteur", orientation="h",
-                     color_discrete_sequence=["#4f8cff"], title="Répartition sectorielle de l'univers")
-        st.plotly_chart(style_fig(fig), use_container_width=True)
+    if conf is None:
+        st.error("Données indisponibles pour cet instrument (yfinance). Réessaie dans quelques minutes.")
+        st.stop()
 
-    # --- Explorateur interactif de catégories ---
-    st.subheader("🔎 Explorer une catégorie")
-    e1, e2 = st.columns([1, 3])
-    cat_sel = e1.selectbox("Catégorie", ["ETF", "Action", "Bond"])
-    sect_opts = ["Tous"] + sorted(assets.query("categorie == @cat_sel")["secteur"].unique().tolist())
-    sect_sel = e1.selectbox("Secteur", sect_opts)
-    sub = assets.query("categorie == @cat_sel")
-    if sect_sel != "Tous":
-        sub = sub.query("secteur == @sect_sel")
-    e2.dataframe(sub[["ticker", "nom", "secteur", "google_symbol", "yahoo_symbol"]],
-                 use_container_width=True, hide_index=True)
+    vix_df = dl.load_vix()
+    spx_df = dl.load_ohlc("ES=F", "1D")
+    fg = vs.fear_greed_composite(vix_df, spx_df)
 
-    tick = e1.selectbox("Graphique", sub["ticker"].tolist() if not sub.empty else [])
-    if tick:
-        y_sym = assets.loc[assets["ticker"] == tick, "yahoo_symbol"].iloc[0]
-        hist = get_history(y_sym, "1y")
-        if not hist.empty:
-            fig = go.Figure(go.Scatter(x=hist.index, y=hist["Close"], mode="lines",
-                                       line=dict(color="#22d3ee", width=2), name=tick))
-            fig.update_layout(title=f"{tick} — 12 mois (Yahoo Finance)")
-            st.plotly_chart(style_fig(fig, 320), use_container_width=True)
-        else:
-            st.info("Historique indisponible pour cet actif.")
+    c1, c2, c3, c4 = st.columns(4)
+    dir_emoji = {"LONG": "🟢", "SHORT": "🔴", "NEUTRE": "⚪"}[conf["direction"]]
+    c1.metric("Direction suggérée", f"{dir_emoji} {conf['direction']}")
+    c2.metric("Probabilité hausse", f"{conf['prob_up']} %")
+    c3.metric("Probabilité baisse", f"{conf['prob_down']} %")
+    if fg:
+        c4.metric("VIX / Sentiment", f"{fg['vix']:.1f} — {fg['label']}")
 
-    # --- Vue synthétique de mes portefeuilles ---
-    pfs = db.load_portfolios()
-    st.subheader("💼 Mes portefeuilles")
-    if pfs.empty:
-        st.info("Aucun portefeuille — crée ton premier dans l'onglet **💼 Mes portefeuilles**.")
+    # Filtre MMM : No body close, no trade
+    ltf_mmm = mmm_res.get("15m")
+    if ltf_mmm and ltf_mmm["no_trade"]:
+        st.warning("⛔ **Règle MMM : dernière bougie 15m en NBC (pas de body close) → No Trade.** "
+                   "Attendre un BuBC ou BeBC pour confirmer l'agression d'un camp.")
+
+    # Plan de trade
+    st.subheader("Plan de trade proposé (RR 1:2)")
+    if conf["plan"]:
+        p = conf["plan"]
+        pc1, pc2, pc3, pc4 = st.columns(4)
+        pc1.metric("Entrée", f"{p['entry']:,}")
+        pc2.metric("Stop Loss", f"{p['sl']:,}")
+        pc3.metric("Take Profit (2R)", f"{p['tp']:,}")
+        pc4.metric("Stop en points", f"{p['stop_pts']}")
+        st.caption("Entrée positionnée sur FVG/Order Block du timeframe bas dans le sens de la confluence ; "
+                   "stop dimensionné sur 1,2 × ATR. Utilise l'onglet Risque pour la taille de position exacte.")
     else:
-        for _, p in pfs.iterrows():
-            h = valorise(db.holdings(p["portfolio"]), assets)
-            invested = h["investi"].sum() if not h.empty else 0
-            value = h["valeur"].dropna().sum() if not h.empty else 0
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric(f"📁 {p['portfolio']}", f"{p['capital']:,.0f} {p['devise']}")
-            k2.metric("Investi", f"{invested:,.2f}")
-            k3.metric("Valeur marché", f"{value:,.2f}")
-            gain = value - invested
-            k4.metric("Gain / Perte", f"{gain:,.2f}",
-                      f"{(gain/invested*100):+.2f}%" if invested else None)
+        st.info("Marché sans direction claire (confluence neutre). Le meilleur trade est parfois de ne pas trader.")
 
-# ===========================================================================
-# 🌍 INDICES MONDIAUX
-# ===========================================================================
-elif page == "🌍 Indices mondiaux":
-    st.title("🌍 Indices mondiaux")
-    st.caption("USA · Europe · Asie · Fear Index (VIX) — comme dans ta feuille Gestion_Portefeuille.")
+    # Détail des scores par TF
+    st.subheader("Confluence par timeframe")
+    cols = st.columns(len(conf["detail"]))
+    for col, (tf, d) in zip(cols, conf["detail"].items()):
+        emoji = "🟢" if d["bias"] == "Haussier" else ("🔴" if d["bias"] == "Baissier" else "⚪")
+        col.metric(f"{tf}", f"{emoji} {d['bias']}", f"score {d['score']:+.1f}")
 
-    try:
-        with st.spinner("Récupération des indices…"):
-            idx = get_index_dashboard()
-    except Exception as e:
-        st.error(f"Impossible de récupérer les indices : {e}")
-        st.stop()
+    # Raisons du signal (TF 15m + 1D)
+    with st.expander("🔍 Justification du signal (lecture ICT)"):
+        for tf in ["1D", "60m", "15m", "5m"]:
+            a = analyses.get(tf)
+            if a and a["reasons"]:
+                st.markdown(f"**{tf}** — zone {a['pd']['zone']} ({a['pd']['pct_range']:.0f}% du range)")
+                for r in a["reasons"]:
+                    st.markdown(f"- {r}")
 
-    for region in ["USA", "Europe", "Asie", "Fear Index"]:
-        st.subheader(region)
-        sub = idx[idx["Région"] == region]
-        cols = st.columns(max(len(sub), 1))
-        for c, (_, r) in zip(cols, sub.iterrows()):
-            if pd.isna(r["Prix"]):
-                c.metric(r["Indice"], "N/A")
-            else:
-                c.metric(r["Indice"], f"{r['Prix']:,.2f}",
-                         f"{r['Var 1J %']:+.2f}%" if pd.notna(r["Var 1J %"]) else None)
-        st.caption(" · ".join(f"{r['Indice']}: {r['Source']}" for _, r in sub.iterrows()))
-
-    st.divider()
-    st.subheader("📉 Comparaison graphique (base 100)")
-    choices = st.multiselect("Indices à comparer", list(WORLD_INDICES.keys()),
-                             default=["S&P500", "CAC 40", "Nikkei 225"])
-    period = st.select_slider("Période", ["1mo", "3mo", "6mo", "1y", "2y"], value="1y")
-    if choices:
-        fig = go.Figure()
-        for i, name in enumerate(choices):
-            y_sym = WORLD_INDICES[name][1]
-            h = get_history(y_sym, period)
-            if not h.empty:
-                base = h["Close"] / h["Close"].iloc[0] * 100
-                fig.add_trace(go.Scatter(x=h.index, y=base, name=name,
-                                         line=dict(color=PALETTE[i % len(PALETTE)], width=2)))
-        fig.update_layout(title="Performance relative (base 100)")
-        st.plotly_chart(style_fig(fig, 460), use_container_width=True)
-
-# ===========================================================================
-# 💼 MES PORTEFEUILLES (création avec allocations)
-# ===========================================================================
-elif page == "💼 Mes portefeuilles":
-    st.title("💼 Constructeur de portefeuilles")
-
-    with st.expander("➕ Créer un portefeuille", expanded=db.load_portfolios().empty):
-        c1, c2, c3 = st.columns(3)
-        nom = c1.text_input("Nom du portefeuille", placeholder="Ex: ETF Croissance 2026")
-        capital = c2.number_input("Capital (montant)", min_value=100.0, value=31000.0, step=500.0)
-        devise = c3.selectbox("Devise", ["€", "$"])
-
-        st.markdown("**Allocation cible** (stratégie visée)")
-        a1, a2, a3 = st.columns(3)
-        al_act = a1.slider("Actions %", 0, 100, 15)
-        al_etf = a2.slider("ETFs %", 0, 100, 65)
-        al_bond = a3.slider("Bonds %", 0, 100, 20)
-        total = al_act + al_etf + al_bond
-        (st.success if total == 100 else st.warning)(f"Total allocation : {total}%")
-
-        fig = px.pie(names=["Actions", "ETFs", "Bonds"], values=[al_act, al_etf, al_bond],
-                     hole=0.5, color=["Actions", "ETFs", "Bonds"],
-                     color_discrete_map={"Actions": "#8b5cf6", "ETFs": "#4f8cff", "Bonds": "#10b981"})
-        st.plotly_chart(style_fig(fig, 280), use_container_width=True)
-
-        st.markdown("**Montants par poche**")
+    # Impact macro du jour
+    st.subheader("Contexte macro du jour")
+    events = ne.fetch_events()
+    imp = ne.market_impact_summary(events)
+    if imp:
         m1, m2, m3 = st.columns(3)
-        m1.metric("Actions", f"{capital*al_act/100:,.0f} {devise}")
-        m2.metric("ETFs", f"{capital*al_etf/100:,.0f} {devise}")
-        m3.metric("Bonds", f"{capital*al_bond/100:,.0f} {devise}")
+        m1.metric("Effet net Nasdaq", imp["nq_txt"])
+        m2.metric("Effet net Or", imp["gold_txt"])
+        m3.metric("Annonces à fort impact", imp["high_impact"])
+        if imp["warning"]:
+            st.error("⚠️ Journée à haut risque événementiel : plusieurs annonces majeures. "
+                     "Réduire la taille ou éviter les entrées autour des publications.")
+    else:
+        st.caption("Aucun événement significatif détecté sur les flux (ou flux indisponibles).")
 
-        if st.button("Créer le portefeuille", disabled=(total != 100 or not nom)):
-            ok, msg = db.create_portfolio(nom, capital, devise, al_act, al_etf, al_bond)
-            (st.success if ok else st.error)(msg)
-            if ok:
-                st.rerun()
+    # Enregistrement du contexte dans la mémoire
+    if st.button("💾 Enregistrer ce contexte dans la mémoire des patterns"):
+        a15 = analyses.get("15m") or analyses.get("1D")
+        mlr = None
+        try:
+            mlr = ml.train_predict(tfs["1D"])
+        except Exception:
+            pass
+        pm.record_context(
+            symbole=instrument, timeframe="multi", prix=a15["price"],
+            biais=a15["bias"], sweep=a15["sweeps"][-1]["type"] if a15["sweeps"] else "aucun",
+            n_fvg=len(a15["fvgs"]), body_close=ltf_mmm["last_state"] if ltf_mmm else "?",
+            zone_pd=a15["pd"]["zone"], vix_regime=fg["regime"]["regime"] if fg else "?",
+            prob_ict=conf["prob_up"], prob_ml=mlr["proba_up"] if mlr else "",
+            direction=conf["direction"])
+        st.success("Contexte enregistré dans data/patterns_memory.csv ✅")
 
-    pfs = db.load_portfolios()
-    if pfs.empty:
-        st.stop()
+# ═════════════════════ PAGE : ANALYSE MULTI-TF ═════════════════════
+elif page == "📊 Analyse ICT multi-TF":
+    st.title(f"📊 Analyse ICT / MMM — {instrument}")
+    tfs, analyses, mmm_res, conf = full_analysis(ticker)
 
-    st.divider()
-    sel = st.selectbox("Portefeuille", pfs["portfolio"].tolist())
-    p = pfs[pfs["portfolio"] == sel].iloc[0]
-    h = valorise(db.holdings(sel), assets)
+    tabs = st.tabs(["5 minutes", "15 minutes", "60 minutes", "Journalier"])
+    for tab, tf in zip(tabs, ["5m", "15m", "60m", "1D"]):
+        with tab:
+            df, a, m = tfs.get(tf), analyses.get(tf), mmm_res.get(tf)
+            if df is None or df.empty or a is None:
+                st.warning("Données indisponibles pour ce timeframe.")
+                continue
+            st.plotly_chart(ch.candles_with_ict(df.tail(200), a, m,
+                            f"{instrument} — {tf}"), use_container_width=True)
 
-    invested = h["investi"].sum() if not h.empty else 0
-    value = h["valeur"].dropna().sum() if not h.empty else 0
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Capital", f"{p['capital']:,.0f} {p['devise']}")
-    k2.metric("Investi", f"{invested:,.2f}")
-    k3.metric("Liquidités", f"{p['capital']-invested:,.2f}")
-    k4.metric("Valeur marché", f"{value:,.2f}")
-    gain = value - invested
-    k5.metric("Gain/Perte", f"{gain:,.2f}", f"{(gain/invested*100):+.2f}%" if invested else None)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Biais ICT", a["bias"], f"score {a['score']:+.1f}")
+            c2.metric("Zone", a["pd"]["zone"].upper(), f"{a['pd']['pct_range']:.0f}% du range")
+            if m:
+                c3.metric("État MMM", m["last_state"],
+                          "No Trade" if m["no_trade"] else "Body close ✓")
+
+            col_l, col_r = st.columns(2)
+            with col_l:
+                st.markdown("**Lecture ICT**")
+                for r in a["reasons"] or ["Aucun signal notable."]:
+                    st.markdown(f"- {r}")
+                if a["fvgs"]:
+                    st.markdown("**FVG non comblés :** " + ", ".join(
+                        f"{g['type']} [{g['bot']:.1f} – {g['top']:.1f}]" for g in a["fvgs"][-4:]))
+            with col_r:
+                if m:
+                    st.markdown("**Lecture Order Flow (MMM)**")
+                    if m["accelerators"]:
+                        ax = m["accelerators"][-1]
+                        st.markdown(f"- Dernier accélérateur : **{ax['type']}** (×{ax['ratio']})")
+                    for lv in m["wickless"][-3:]:
+                        st.markdown(f"- Niveau {lv['type']} non balayé @ **{lv['level']:.1f}** (cible probable)")
+                    for g in m["gaps"][-3:]:
+                        st.markdown(f"- Gap {g['type']} ouvert [{g['bot']:.1f} – {g['top']:.1f}]")
+                    for ev in m["absorption"][-2:]:
+                        st.markdown(f"- @ {ev['level']:.1f} : *{ev['label']}* (vol ×{ev['vr']})")
+
+# ═════════════════════ PAGE : RISQUE PROP FIRM ═════════════════════
+elif page == "🧮 Risque prop firm (MMM)":
+    st.title("🧮 Calculateur MMM — Risk & Lot Size")
+    st.caption("Framework : Drawdown ÷ 10 = risque max/trade · 1 micro / 1000$ de DD · "
+               "minis à partir de 10 000$ de DD · max 3 trades/jour · RR minimum 1:2.")
 
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("**Stratégie visée vs actuelle**")
-        cible = pd.DataFrame({"Catégorie": ["Action", "ETF", "Bond"],
-                              "Visée %": [p["alloc_actions"], p["alloc_etf"], p["alloc_bonds"]]})
-        if not h.empty and invested:
-            act = h.groupby("categorie")["investi"].sum() / invested * 100
-            cible["Actuelle %"] = cible["Catégorie"].map(act).fillna(0).round(1)
-        else:
-            cible["Actuelle %"] = 0.0
-        fig = go.Figure()
-        fig.add_bar(x=cible["Catégorie"], y=cible["Visée %"], name="Visée", marker_color="#4f8cff")
-        fig.add_bar(x=cible["Catégorie"], y=cible["Actuelle %"], name="Actuelle", marker_color="#f59e0b")
-        fig.update_layout(barmode="group", title="Allocation (%)")
-        st.plotly_chart(style_fig(fig, 340), use_container_width=True)
+        account = st.number_input("Taille du compte financé ($)", 1000, 1000000, 50000, step=5000)
+        drawdown = st.number_input("Drawdown disponible ($) — ton vrai capital", 100, 200000, 2500, step=100)
     with c2:
-        if not h.empty:
-            sec = h.groupby("secteur")["investi"].sum().reset_index()
-            fig = px.pie(sec, names="secteur", values="investi", hole=0.5,
-                         color_discrete_sequence=PALETTE, title="Répartition sectorielle")
-            st.plotly_chart(style_fig(fig, 340), use_container_width=True)
-        else:
-            st.info("Aucune position — ajoute des transactions dans l'onglet 🛒.")
+        instr = st.selectbox("Instrument tradé", list(rc.POINT_VALUES.keys()))
+        winrate = st.slider("Ton winrate estimé (%)", 20, 80, 40)
 
-    if not h.empty:
-        st.markdown("**Positions**")
-        show = h[["ticker", "categorie", "secteur", "quantite", "pru", "prix_actuel",
-                  "investi", "valeur", "gain_perte", "rdmt_pct", "source"]].copy()
-        show.columns = ["Ticker", "Catégorie", "Secteur", "Qté", "PRU", "Prix actuel",
-                        "Investi", "Valeur", "Gain/Perte", "Rdmt %", "Source prix"]
-        st.dataframe(show.round(2), use_container_width=True, hide_index=True)
+    res = rc.mmm_position_size(drawdown, instr)
 
-        if st.button("📸 Enregistrer un snapshot de performance (CSV)"):
-            db.snapshot_perf(sel, value, invested)
-            st.success("Snapshot enregistré dans data/performance_history.csv ✔")
+    st.subheader("Dimensionnement")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Risque max / trade", f"${res['max_risk']:,.0f}", "DD ÷ 10")
+    m2.metric("Micros au total", res["micros_total"])
+    if res["minis"] > 0:
+        m3.metric("Soit en Minis", f"{res['minis']} mini(s) + {res['micros_restants']} micro(s)")
+    else:
+        m3.metric("Minis", "🔒 Débloqués à 10k$ DD")
+    m4.metric("Stop max", f"{res['stop_max_points']} pts",
+              f"@ ${res['point_value_total']:.0f}/pt")
 
-    with st.expander("🗑️ Supprimer ce portefeuille"):
-        if st.button(f"Supprimer définitivement « {sel} »"):
-            db.delete_portfolio(sel)
+    if res["micros_total"] == 0:
+        st.error("Drawdown < 1000$ : aucune taille recommandée. Le compte ne survivrait pas à 10 pertes.")
+    else:
+        st.success(f"Ce dimensionnement supporte **10 pertes consécutives** avant liquidation "
+                   f"({res['micros_total']} micros × ~100$/trade de risque).")
+
+    # Comparaison avec la règle 1% classique
+    with st.expander("Pourquoi pas la règle du 1% classique ?"):
+        st.markdown(f"""
+| Approche | Risque/trade | Pertes avant liquidation |
+|---|---|---|
+| 1% du compte ({account:,}$) | ${account * 0.01:,.0f} | **{max(1, int(drawdown / (account * 0.01)))} trades** ⚠️ |
+| 1% du drawdown | ${drawdown * 0.01:,.0f} | 100 trades (croissance trop lente) |
+| **MMM : DD ÷ 10** | **${res['max_risk']:,.0f}** | **10 trades** ✅ |
+""")
+
+    st.subheader("Matrice des 5 scénarios journaliers (3 trades max, RR 1:2)")
+    matrix = rc.daily_matrix(res["max_risk"])
+    dfm = pd.DataFrame(matrix)
+    dfm["resultat"] = dfm["resultat"].map(lambda x: f"{'+' if x > 0 else ''}{x:,.0f} $")
+    st.table(dfm.rename(columns={"scenario": "Scénario", "resultat": "Résultat", "action": "Action"}))
+
+    exp = rc.expectancy(winrate, res["max_risk"])
+    st.metric("Espérance par trade à ce winrate", f"${exp:,.0f}",
+              "Positive ✅" if exp > 0 else "Négative — travailler le winrate ou le RR ⚠️")
+    st.caption(f"Avec un RR 1:2, le seuil de rentabilité est à 33,3% de winrate. Tu es à {winrate}%.")
+
+# ═════════════════════ PAGE : JOURNAL ═════════════════════
+elif page == "📓 Journal de trading":
+    st.title("📓 Journal de trading")
+    df_j = jr.load_journal()
+    n_today = jr.trades_today(df_j)
+
+    if n_today >= 3:
+        st.error(f"⛔ {n_today} trades enregistrés aujourd'hui. **Règle MMM : STOP TRADING.**")
+    elif n_today > 0:
+        st.info(f"{n_today}/3 trades aujourd'hui. Il t'en reste {3 - n_today}.")
+
+    with st.expander("➕ Ajouter un trade", expanded=df_j.empty):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            t_date = st.date_input("Date", dt.date.today())
+            t_time = st.time_input("Heure", dt.datetime.now().time())
+            t_instr = st.selectbox("Instrument", list(dl.SYMBOLS.keys()) + ["Autre"])
+            t_dir = st.selectbox("Direction", ["LONG", "SHORT"])
+        with c2:
+            t_session = st.selectbox("Session", ["Asie", "Londres", "New York AM", "New York PM"])
+            t_setup = st.selectbox("Setup", ["FVG", "Order Block", "Sweep + MSS", "BOS continuation",
+                                             "UH/UL cible", "Absorption", "Autre"])
+            t_entry = st.number_input("Entrée", 0.0, step=0.25, format="%.2f")
+            t_stop = st.number_input("Stop", 0.0, step=0.25, format="%.2f")
+        with c3:
+            t_target = st.number_input("Target", 0.0, step=0.25, format="%.2f")
+            t_exit = st.number_input("Sortie réelle", 0.0, step=0.25, format="%.2f")
+            t_contracts = st.number_input("Contrats (micros)", 1, 100, 5)
+            t_risk = st.number_input("Risque ($)", 0.0, step=50.0)
+        t_result = st.number_input("Résultat ($)", step=50.0, format="%.2f")
+        t_plan = st.checkbox("Plan respecté ?", True)
+        t_notes = st.text_area("Notes (contexte, émotion, erreur…)", height=80)
+        if st.button("Enregistrer le trade", type="primary"):
+            jr.add_trade(date=t_date.isoformat(), heure=t_time.strftime("%H:%M"),
+                         instrument=t_instr, direction=t_dir, session=t_session, setup=t_setup,
+                         entree=t_entry, stop=t_stop, target=t_target, sortie=t_exit,
+                         contrats=t_contracts, risque_usd=t_risk, resultat_usd=t_result,
+                         respect_plan="Oui" if t_plan else "Non", notes=t_notes)
+            st.success("Trade enregistré ✅")
             st.rerun()
 
-# ===========================================================================
-# 🛒 TRANSACTIONS
-# ===========================================================================
-elif page == "🛒 Transactions":
-    st.title("🛒 Transactions (achat / vente)")
-    pfs = db.load_portfolios()
-    if pfs.empty:
-        st.warning("Crée d'abord un portefeuille dans 💼 Mes portefeuilles.")
+    if not df_j.empty:
+        s = jr.stats(df_j)
+        st.subheader("Statistiques")
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Trades", s["n_trades"])
+        m2.metric("Winrate", f"{s['winrate']}%")
+        m3.metric("P&L total", f"${s['pnl_total']:,.0f}")
+        m4.metric("Profit factor", s["profit_factor"])
+        m5.metric("R moyen", s["avg_r"])
+
+        fig = go.Figure(go.Scatter(y=s["equity"], mode="lines+markers",
+                                   line=dict(color="#26a69a", width=2)))
+        fig.update_layout(title="Courbe d'équité", template="plotly_dark", height=300,
+                          margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("Historique")
+        st.dataframe(df_j.iloc[::-1], use_container_width=True, height=320)
+
+        col_d, col_e = st.columns(2)
+        with col_d:
+            idx = st.number_input("Supprimer la ligne n° (0 = plus ancien)", 0, max(0, len(df_j) - 1), 0)
+            if st.button("🗑️ Supprimer"):
+                jr.delete_trade(int(idx)); st.rerun()
+        with col_e:
+            st.download_button("⬇️ Exporter le journal (CSV)", df_j.to_csv(index=False),
+                               "journal_trading.csv", "text/csv")
+    else:
+        st.caption("Aucun trade enregistré pour l'instant.")
+
+# ═════════════════════ PAGE : VIX ═════════════════════
+elif page == "😱 VIX & Psychologie":
+    st.title("😱 VIX & Psychologie du marché")
+    vix_df = dl.load_vix()
+    spx_df = dl.load_ohlc("ES=F", "1D")
+    fg = vs.fear_greed_composite(vix_df, spx_df)
+
+    if fg is None:
+        st.error("VIX indisponible pour le moment.")
         st.stop()
 
+    reg = fg["regime"]
     c1, c2, c3 = st.columns(3)
-    pf = c1.selectbox("Portefeuille", pfs["portfolio"].tolist())
-    cat = c2.selectbox("Catégorie", ["ETF", "Action", "Bond"])
-    tick = c3.selectbox("Actif", assets.query("categorie == @cat")["ticker"].tolist())
+    c1.metric("VIX", f"{fg['vix']:.2f}")
+    c2.metric("Indice Fear & Greed (composite)", f"{fg['index']}/100", fg["label"])
+    c3.metric("Biais Nasdaq suggéré", reg["nq_bias"])
 
-    a = assets[assets["ticker"] == tick].iloc[0]
-    q = get_price(a["google_symbol"], a["yahoo_symbol"])
+    # Jauge
+    gauge = go.Figure(go.Indicator(
+        mode="gauge+number", value=fg["index"],
+        title={"text": f"Psychologie : {fg['label']}"},
+        gauge={"axis": {"range": [0, 100]},
+               "bar": {"color": reg["color"]},
+               "steps": [{"range": [0, 25], "color": "#4a1414"},
+                         {"range": [25, 45], "color": "#4a3214"},
+                         {"range": [45, 55], "color": "#333"},
+                         {"range": [55, 75], "color": "#1e3a1e"},
+                         {"range": [75, 100], "color": "#144a14"}]}))
+    gauge.update_layout(template="plotly_dark", height=300, margin=dict(l=30, r=30, t=60, b=10))
+    st.plotly_chart(gauge, use_container_width=True)
 
-    c4, c5, c6 = st.columns(3)
-    if q["price"]:
-        c4.metric(f"Prix {tick}", f"{q['price']:,.2f}", help=f"Source : {q['source']}")
-        c4.caption(f"🔌 {q['source']}")
-    else:
-        c4.warning("Prix indisponible (Google & Yahoo). Saisis-le manuellement.")
-    sens = c5.radio("Sens", ["Achat", "Vente"], horizontal=True)
-    qty = c6.number_input("Quantité", min_value=0.01, value=1.0, step=1.0)
+    st.markdown(f"**Régime : {reg['regime']}** — {reg['desc']}")
 
-    prix = st.number_input("Prix d'exécution", min_value=0.01,
-                           value=float(q["price"]) if q["price"] else 100.0)
-    st.metric("Montant", f"{qty*prix:,.2f}")
+    if not vix_df.empty:
+        fig = go.Figure(go.Scatter(x=vix_df.index, y=vix_df["Close"],
+                                   line=dict(color="#ff9800", width=2)))
+        for lvl, txt in [(13, "Complaisance"), (17, "Calme"), (25, "Nervosité"), (35, "Peur")]:
+            fig.add_hline(y=lvl, line_dash="dot", line_color="#555",
+                          annotation_text=txt, annotation_font_size=9)
+        fig.update_layout(title="VIX — 1 an", template="plotly_dark", height=350,
+                          margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(fig, use_container_width=True)
 
-    if st.button("✅ Enregistrer la transaction"):
-        db.add_transaction(pf, tick, a["categorie"], a["secteur"], sens, qty, prix,
-                           q["source"] if q["price"] else "Manuel")
-        st.success(f"{sens} {qty} × {tick} @ {prix:,.2f} enregistré dans data/transactions.csv ✔")
+# ═════════════════════ PAGE : CORRÉLATIONS ═════════════════════
+elif page == "🔗 Corrélations live":
+    st.title("🔗 Corrélations live — 14 actifs & indices")
+    st.caption("Corrélations de Pearson calculées sur les **rendements** (données yfinance, "
+               "rafraîchies toutes les 15 min). Nasdaq, S&P, Dow, CAC 40, DAX, MSCI World, "
+               "Or, Argent, Pétrole, VIX, Taux 10 ans, Dollar Index, EUR/USD, Bitcoin.")
 
-    st.divider()
-    st.subheader("Historique des transactions")
-    tx = db.load_transactions()
-    tx = tx[tx["portfolio"] == pf]
-    if tx.empty:
-        st.info("Aucune transaction pour ce portefeuille.")
-    else:
-        st.dataframe(tx.sort_values("date", ascending=False),
-                     use_container_width=True, hide_index=True)
+    period_key = st.selectbox("Période de calcul", list(cor.PERIODS.keys()), index=1)
+    closes = cor.load_closes(period_key)
 
-# ===========================================================================
-# 📊 PERFORMANCE
-# ===========================================================================
-elif page == "📊 Performance":
-    st.title("📊 Suivi de performance")
-    perf = db.load_perf()
-    if perf.empty:
-        st.info("Aucun snapshot. Depuis 💼 Mes portefeuilles, clique sur "
-                "« 📸 Enregistrer un snapshot » pour alimenter performance_history.csv.")
+    if closes.empty or len(closes.columns) < 4:
+        st.error("Données insuffisantes (yfinance indisponible ou marchés fermés). Réessaie dans quelques minutes.")
         st.stop()
 
-    pf_sel = st.multiselect("Portefeuilles", perf["portfolio"].unique().tolist(),
-                            default=perf["portfolio"].unique().tolist())
-    sub = perf[perf["portfolio"].isin(pf_sel)].copy()
-    sub["date"] = pd.to_datetime(sub["date"])
+    corr = cor.correlation_matrix(closes)
+    if corr.empty:
+        st.error("Pas assez d'historique sur cette période pour calculer les corrélations.")
+        st.stop()
 
-    fig = px.line(sub, x="date", y="valeur_marche", color="portfolio",
-                  markers=True, color_discrete_sequence=PALETTE,
-                  title="Valeur de marché dans le temps")
-    st.plotly_chart(style_fig(fig, 400), use_container_width=True)
+    # Régime de marché déduit des corrélations
+    reg = cor.regime_signal(corr)
+    st.metric("Régime détecté", reg["regime"])
+    st.caption(reg["desc"])
 
-    fig2 = px.line(sub, x="date", y="perf_pct", color="portfolio",
-                   markers=True, color_discrete_sequence=PALETTE,
-                   title="Performance % dans le temps")
-    fig2.add_hline(y=0, line_dash="dot", line_color="#9fb0d8")
-    st.plotly_chart(style_fig(fig2, 360), use_container_width=True)
+    # Heatmap
+    fig = go.Figure(go.Heatmap(
+        z=corr.values, x=corr.columns, y=corr.index,
+        zmin=-1, zmax=1, colorscale="RdBu", reversescale=False,
+        text=corr.values, texttemplate="%{text:.2f}",
+        textfont=dict(size=9), colorbar=dict(title="Corr")))
+    fig.update_layout(template="plotly_dark", height=620,
+                      margin=dict(l=10, r=10, t=30, b=10),
+                      xaxis=dict(tickangle=-40))
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("🔵 proche de +1 : les actifs bougent ensemble · 🔴 proche de -1 : ils bougent en sens opposé · "
+               "proche de 0 : indépendants.")
 
-    st.dataframe(sub.sort_values("date", ascending=False),
-                 use_container_width=True, hide_index=True)
+    # Lecture des paires critiques pour un trader NQ
+    st.subheader("Paires critiques (lecture trader NQ)")
+    for p in cor.key_pairs_summary(corr):
+        v = p["corr"]
+        badge = "🔵" if v > 0.4 else ("🔴" if v < -0.4 else "⚪")
+        with st.container(border=True):
+            st.markdown(f"{badge} **{p['paire']} : {v:+.2f}** — {p['note']}")
 
-# ===========================================================================
-# 🗂️ ACTIFS & DONNÉES (CSV)
-# ===========================================================================
-elif page == "🗂️ Actifs & données (CSV)":
-    st.title("🗂️ Univers d'actifs & fichiers CSV")
+    # Corrélation glissante d'une paire au choix
+    st.subheader("Corrélation glissante (fenêtre 20 barres)")
+    c1, c2 = st.columns(2)
+    assets = list(closes.columns)
+    a = c1.selectbox("Actif A", assets, index=assets.index("Nasdaq 100") if "Nasdaq 100" in assets else 0)
+    b = c2.selectbox("Actif B", assets, index=assets.index("VIX") if "VIX" in assets else 1)
+    roll = cor.rolling_correlation(closes, a, b)
+    if not roll.empty:
+        figr = go.Figure(go.Scatter(x=roll.index, y=roll.values,
+                                    line=dict(color="#26a69a", width=2)))
+        figr.add_hline(y=0, line_dash="dot", line_color="#777")
+        figr.add_hline(y=0.5, line_dash="dot", line_color="#2e7d32")
+        figr.add_hline(y=-0.5, line_dash="dot", line_color="#c62828")
+        figr.update_layout(title=f"{a} ↔ {b} — corrélation glissante",
+                           template="plotly_dark", height=320,
+                           yaxis=dict(range=[-1, 1]),
+                           margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(figr, use_container_width=True)
+        st.caption("Une corrélation qui **change de régime** (ex. NQ/VIX qui remonte vers 0) est souvent "
+                   "un signal avancé de changement de comportement du marché.")
 
-    with st.expander("➕ Ajouter un actif à l'univers"):
-        c1, c2, c3 = st.columns(3)
-        t = c1.text_input("Ticker", placeholder="VWCE")
-        n = c2.text_input("Nom", placeholder="Vanguard FTSE All-World")
-        cat = c3.selectbox("Catégorie", ["ETF", "Action", "Bond"])
-        c4, c5, c6 = st.columns(3)
-        sec = c4.text_input("Secteur", placeholder="Monde")
-        gsym = c5.text_input("Symbole Google Finance", placeholder="FRA:VWCE ou NYSEARCA:XXX")
-        ysym = c6.text_input("Symbole Yahoo Finance", placeholder="VWCE.DE")
-        if st.button("Ajouter l'actif"):
-            if t and gsym and ysym:
-                ok, msg = db.add_asset(t, n or t, cat, sec or "Autre", gsym, ysym)
-                (st.success if ok else st.error)(msg)
-                if ok:
-                    st.rerun()
+    with st.expander("📥 Exporter la matrice (CSV)"):
+        st.download_button("Télécharger", corr.to_csv(), "correlations.csv", "text/csv")
+
+# ═════════════════════ PAGE : ÉVÉNEMENTS ═════════════════════
+elif page == "🌍 Événements du jour":
+    st.title("🌍 Annonces macro, géopolitiques & événements naturels")
+    st.caption("Sources : flux RSS publics (CNBC, MarketWatch, Investing, Yahoo). "
+               "Impact estimé par mots-clés — vérifie toujours le calendrier économique officiel (ForexFactory).")
+
+    if st.button("📰 Charger les événements du jour et calculer leur impact", type="primary"):
+        with st.spinner("Récupération des flux…"):
+            events = ne.fetch_events()
+        if not events:
+            st.warning("Aucun événement récupéré (flux indisponibles ou journée calme).")
+        else:
+            imp = ne.market_impact_summary(events)
+            if imp:
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Effet net Nasdaq", imp["nq_txt"], f"score {imp['nq_net']:+d}")
+                m2.metric("Effet net Or", imp["gold_txt"], f"score {imp['gold_net']:+d}")
+                m3.metric("Annonces fort impact", imp["high_impact"])
+                if imp["warning"]:
+                    st.error("⚠️ Plusieurs annonces majeures aujourd'hui — volatilité attendue élevée.")
+            impact_badge = {3: "🔴 FORT", 2: "🟠 MOYEN", 1: "🟡 FAIBLE"}
+            for e in events:
+                with st.container(border=True):
+                    st.markdown(f"**{impact_badge[e['impact']]}** · {e['categories']} · *{e['source']}* · {e['heure']}")
+                    st.markdown(f"**[{e['titre']}]({e['lien']})**")
+                    if e["resume"]:
+                        st.caption(e["resume"])
+                    st.markdown(f"Impact estimé → Nasdaq : **{e['effet_nq']}** · Or : **{e['effet_or']}**")
+
+# ═════════════════════ PAGE : MACHINE LEARNING ═════════════════════
+elif page == "🤖 Machine Learning":
+    st.title(f"🤖 Prédiction ML — {instrument}")
+    st.caption("Random Forest entraîné sur les features techniques + signaux ICT/MMM, "
+               "validé en walk-forward (TimeSeriesSplit). La précision affichée est hors-échantillon.")
+
+    tf_ml = st.selectbox("Timeframe de prédiction", ["1D", "60m", "15m"])
+    if st.button("🚀 Entraîner et prédire", type="primary"):
+        df = dl.load_ohlc(ticker, tf_ml)
+        if df.empty or len(df) < 150:
+            st.error("Pas assez d'historique pour ce timeframe.")
+        else:
+            with st.spinner("Entraînement du modèle…"):
+                res = ml.train_predict(df)
+            if res is None:
+                st.error("Échantillon insuffisant après construction des features.")
             else:
-                st.error("Ticker + symboles Google et Yahoo sont obligatoires.")
+                c1, c2, c3, c4 = st.columns(4)
+                emoji = "🟢" if res["direction"] == "HAUSSE" else "🔴"
+                c1.metric("Prochaine bougie", f"{emoji} {res['direction']}")
+                c2.metric("Probabilité hausse", f"{res['proba_up']}%")
+                c3.metric("Précision walk-forward", f"{res['cv_accuracy']}%", f"± {res['cv_std']}%")
+                c4.metric("Échantillons", res["n_samples"])
 
-    st.subheader("Univers actuel (data/assets.csv)")
-    st.dataframe(assets, use_container_width=True, hide_index=True)
-    del_t = st.selectbox("Supprimer un actif", ["—"] + assets["ticker"].tolist())
-    if del_t != "—" and st.button(f"Supprimer {del_t}"):
-        db.delete_asset(del_t)
-        st.rerun()
+                if res["cv_accuracy"] < 53:
+                    st.warning("⚠️ Précision proche du hasard (50%) : ne trade pas ce signal seul. "
+                               "Il ne vaut que combiné à la confluence ICT et au contexte macro.")
 
-    st.divider()
-    st.subheader("⬇️ Télécharger les CSV")
-    d1, d2, d3, d4 = st.columns(4)
-    d1.download_button("assets.csv", assets.to_csv(index=False), "assets.csv", "text/csv")
-    d2.download_button("portfolios.csv", db.load_portfolios().to_csv(index=False), "portfolios.csv", "text/csv")
-    d3.download_button("transactions.csv", db.load_transactions().to_csv(index=False), "transactions.csv", "text/csv")
-    d4.download_button("performance_history.csv", db.load_perf().to_csv(index=False), "performance_history.csv", "text/csv")
-    st.caption("⚠️ Sur Streamlit Cloud le disque est éphémère : télécharge régulièrement tes CSV "
-               "(ou pousse le dossier data/ sur GitHub) pour ne rien perdre.")
+                st.subheader("Features les plus importantes")
+                imp_df = res["importances"].reset_index()
+                imp_df.columns = ["Feature", "Importance"]
+                fig = go.Figure(go.Bar(x=imp_df["Importance"], y=imp_df["Feature"],
+                                       orientation="h", marker_color="#26a69a"))
+                fig.update_layout(template="plotly_dark", height=350,
+                                  yaxis=dict(autorange="reversed"),
+                                  margin=dict(l=10, r=10, t=10, b=10))
+                st.plotly_chart(fig, use_container_width=True)
+
+# ═════════════════════ PAGE : MÉMOIRE ═════════════════════
+elif page == "🧠 Mémoire des patterns":
+    st.title("🧠 Mémoire des patterns de marché")
+    st.caption("Chaque contexte enregistré depuis le Dashboard est stocké dans data/patterns_memory.csv. "
+               "La plateforme met à jour les résultats réels et calcule des probabilités conditionnelles "
+               "à partir des contextes similaires passés.")
+
+    mem = pm.get_memory()
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🔄 Mettre à jour les résultats réels"):
+            prices = {}
+            for name, tk in dl.SYMBOLS.items():
+                df = dl.load_ohlc(tk, "1D")
+                if not df.empty:
+                    prices[name] = float(df["Close"].iloc[-1])
+            mem = pm.update_outcomes(prices)
+            st.success("Résultats mis à jour ✅")
+    with c2:
+        if not mem.empty:
+            st.download_button("⬇️ Exporter la mémoire (CSV)", mem.to_csv(index=False),
+                               "patterns_memory.csv", "text/csv")
+
+    if mem.empty:
+        st.info("Mémoire vide. Va sur le Dashboard et clique « Enregistrer ce contexte » pour commencer "
+                "à construire l'historique.")
+    else:
+        st.dataframe(mem.iloc[::-1], use_container_width=True, height=300)
+
+        done = mem[mem["resultat_reel"].isin(["HAUSSE", "BAISSE"])]
+        if len(done) >= 3:
+            st.subheader("Fiabilité des prédictions passées")
+            correct = (done["direction_predite"].map({"LONG": "HAUSSE", "SHORT": "BAISSE"})
+                       == done["resultat_reel"]).mean() * 100
+            st.metric("Taux de bonne direction (ICT)", f"{correct:.0f}%",
+                      f"sur {len(done)} contextes résolus")
+
+            tfs2, analyses2, mmm2, _ = full_analysis(ticker)
+            a = analyses2.get("15m") or analyses2.get("1D")
+            m = mmm2.get("15m")
+            if a:
+                sim = pm.similar_context_stats(instrument, a["bias"],
+                                               m["last_state"] if m else "?", "")
+                if sim:
+                    st.subheader(f"Contexte actuel similaire à {sim['n']} situations passées")
+                    st.metric("Probabilité historique de hausse", f"{sim['prob_hausse']}%")
+        else:
+            st.caption("Enregistre au moins quelques contextes et mets à jour les résultats "
+                       "pour débloquer les statistiques conditionnelles.")
+
+st.sidebar.divider()
+st.sidebar.caption("⚠️ Outil éducatif et d'aide à la décision. Les probabilités sont des estimations "
+                   "statistiques, pas des garanties. Ceci n'est pas un conseil financier.")
