@@ -97,7 +97,9 @@ MARKET_INDICES = {
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_market_history(period: str) -> pd.DataFrame:
-    """Historique de clôture des indices pour le graphique d'évolution."""
+    """Historique de clôture des indices. IMPORTANT : pas de ffill ici —
+    chaque actif garde ses propres dates de cotation (BTC cote le week-end,
+    pas le CAC), sinon les variations quotidiennes sortent à 0.00%."""
     try:
         raw = yf.download(list(MARKET_INDICES.values()), period=period, interval="1d",
                           progress=False, auto_adjust=True)
@@ -106,7 +108,7 @@ def load_market_history(period: str) -> pd.DataFrame:
             closes = closes.to_frame()
         inv = {v: k for k, v in MARKET_INDICES.items()}
         closes = closes.rename(columns=inv)
-        return closes.ffill().dropna(how="all")
+        return closes.dropna(how="all")
     except Exception:
         return pd.DataFrame()
 
@@ -120,16 +122,19 @@ def render_market_overview():
                    "Clique « Rafraîchir les prix » dans quelques minutes.")
         return
 
-    # Tuiles : dernier prix + variation quotidienne
+    # Tuiles : dernier prix + variation quotidienne (sur les VRAIES cotations
+    # de chaque actif : dropna par colonne, pas de valeurs recopiées)
     names = [n for n in MARKET_INDICES if n in hist.columns]
     for row_start in range(0, len(names), 6):
         cols = st.columns(6)
         for col, name in zip(cols, names[row_start:row_start + 6]):
             s = hist[name].dropna()
+            s = s[~s.index.duplicated(keep="last")]
             if len(s) < 2:
+                col.metric(name, "—")
                 continue
             last, prev = float(s.iloc[-1]), float(s.iloc[-2])
-            chg = (last / prev - 1) * 100
+            chg = (last / prev - 1) * 100 if prev else 0
             fmt = f"{last:,.2f}" if last < 10000 else f"{last:,.0f}"
             col.metric(name, fmt, f"{chg:+.2f}%")
 
@@ -142,7 +147,7 @@ def render_market_overview():
                              default=[n for n in ["S&P 500", "Nasdaq 100", "CAC 40",
                                                   "MSCI World", "Or"] if n in names])
     n_days = {"5 jours": 5, "1 mois": 22, "3 mois": 66, "6 mois": 126}[per_key]
-    seg = hist.tail(n_days)
+    seg = hist.ffill().tail(n_days)  # ffill ici seulement : lignes continues sur le graphe
     with c2:
         if sel and len(seg) > 1:
             fig = go.Figure()
